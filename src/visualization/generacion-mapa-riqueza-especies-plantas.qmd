@@ -1,0 +1,341 @@
+---
+title: "Generación de un mapa de riqueza de especies de plantas"
+format: 
+  html:
+    lang: es
+    theme: cosmo
+    toc: true
+    toc-expand: 3
+---
+
+# Introducción
+Este documento, elaborado con el sistema de publicación técnica y científica [Quarto](https://quarto.org/), detalla el proceso de generación de un mapa de riqueza de especies. La riqueza de especies de un polígono se calcula al contar la cantidad de registros de presencia de especies contenidos en este.
+
+El código fuente de este documento está disponible en [https://github.com/evaluacion-arboles-mesoamerica/mapas/blob/main/src/visualization/generacion-mapa-riqueza-especies-plantas.qmd](https://github.com/evaluacion-arboles-mesoamerica/mapas/blob/main/src/visualization/generacion-mapa-riqueza-especies-plantas.qmd).
+
+```{r}
+#| label: carga-paquetes
+#| echo: false
+#| message: false
+
+# Paquetes
+library(here)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(sf)
+library(DT)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+library(crhexgrids)
+```
+
+# Definición de parámetros generales
+Para comenzar, se definieron algunos parámetros generales del procesamiento en R.
+
+```{r}
+#| label: constantes
+#| code-fold: show
+#| code-summary: "Código para la definición de parámetros generales"
+
+# Archivo con los registros de presencia de especies.
+# Este archivo debe comprimirse después de usarse 
+# para que pueda ser alojado en GitHub.
+ARCHIVO_REGISTROS_PRESENCIA_ESPECIES <- 
+  here("data", "raw", "points_data.csv")
+
+# Archivo con el mapa de riqueza de especies.
+ARCHIVO_MAPA_RIQUEZA_ESPECIES <-
+  here("data", "processed", "riqueza-especies-plantas.gpkg")
+```
+
+Las rutas especificadas para los archivos se basan en la estructura de directorios para proyectos de ciencia de datos propuesta por la iniciativa [Cookiecutter Data Science](http://drivendata.github.io/cookiecutter-data-science/).
+
+# Carga y visualización de datos de entrada
+
+## Carga
+
+### Registros de presencia de especies
+
+::: {.callout-note title="Archivo con los registros de presencia de especies"}
+`r ARCHIVO_REGISTROS_PRESENCIA_ESPECIES`
+:::
+
+El archivo se cargó en un objeto sf de R, para su procesamiento.
+
+```{r}
+#| label: carga-registros-presencia
+#| message: false
+#| code-fold: true
+#| code-summary: "Código para la carga de registros de presencia"
+
+# Carga de los registros de presencia
+registros_presencia <-
+  st_read(
+    ARCHIVO_REGISTROS_PRESENCIA_ESPECIES,
+  	
+    options = c(
+      "X_POSSIBLE_NAMES=longitude", # columna de longitud decimal
+      "Y_POSSIBLE_NAMES=latitude"   # columna de latitud decimal
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84
+st_crs(registros_presencia) <- 4326
+
+# Muestra de registros de presencia
+registros_presencia_muestra <-
+  registros_presencia |>
+  slice_sample(n = 1000, replace = FALSE)
+```
+
+### Polígonos
+
+```{r}
+#| label: carga-polígonos
+#| message: false
+#| code-fold: true
+#| code-summary: "Código para la carga de polígonos"
+
+# Carga de los polígonos
+poligonos <- cr_hex_grid_res_5
+```
+
+## Visualización
+
+### Mapa de registros de presencia (muestra) y polígonos
+
+```{r}
+#| label: mapa-registros-presencia
+#| warning: false
+#| message: false
+#| code-fold: true
+#| code-summary: "Código para la generación del mapa"
+
+# Visualización de los registros
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7
+  ) |>  
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addPolygons(
+    data = poligonos,
+    color = "black",
+    fillColor = "transparent",
+    stroke = TRUE,
+    weight = 1.5,
+    group = "Hexágonos"
+  ) |>  
+  addCircleMarkers(
+    data = registros_presencia_muestra,
+    stroke = TRUE,
+    radius = 0.7,
+    fillOpacity = 1,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", registros_presencia_muestra$species),
+      paste0("<strong>Localidad: </strong>", registros_presencia_muestra$locality),
+      paste0("<strong>Fecha: </strong>", registros_presencia_muestra$eventDate),
+      paste0("<strong>Fuente: </strong>", registros_presencia_muestra$institutionCode),
+      paste0("<a href='", registros_presencia_muestra$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  )
+```
+
+::: {.callout-note title="Cantidad de registros de presencia de especies"}
+`r nrow(registros_presencia)`
+:::
+
+::: {.callout-note title="Cantidad de polígonos"}
+`r nrow(poligonos)`
+:::
+
+# Cálculo de la riqueza de especies
+
+## Unión espacial de registros de presencia de especies y polígonos
+
+```{r}
+#| label: join-registros-presencia-poligonos
+#| warning: false
+#| message: false
+#| code-fold: true
+#| code-summary: "Código de la unión"
+
+# Unión espacial de registros de presencia y polígonos
+registros_presencia_join_poligonos <- 
+  st_join(
+    x = registros_presencia,
+    y = dplyr::select(cr_hex_grid_res_5, h3_address),
+    join = st_within,
+    left = TRUE
+  )
+```
+
+::: {.callout-note title="Cantidad de registros unidos de presencia de especies y de polígonos"}
+`r sum(is.na(registros_presencia_join_poligonos$h3_address))`
+:::
+
+## Conteo de la cantidad de especies en cada polígono
+
+```{r}
+#| label: conteo-especies-poligonos
+#| warning: false
+#| message: false
+#| code-fold: true
+#| code-summary: "Código del conteo de especies en cada polígono"
+
+# Conteo de especies por polígono
+conteo_especies_poligonos <- 
+  registros_presencia_join_poligonos |>
+  st_drop_geometry() |>
+  group_by(h3_address) |>
+  summarize(especies = n_distinct(sci_name, na.rm = TRUE))
+```
+
+## Unión de polígonos con cantidad de especies
+
+```{r}
+#| label: union-poligonos-cantidad-especies
+#| warning: false
+#| message: false
+#| code-fold: true
+#| code-summary: "Código del conteo de la unión"
+
+# Unión de polígonos con cantidad de especies
+riqueza_especies_poligonos <-
+  poligonos |>
+  left_join(conteo_especies_poligonos, by = "h3_address") |>
+  replace_na(list(especies = 0))
+```
+
+# Generación del mapa de riqueza de especies
+
+## Visualización del mapa
+
+```{r}
+#| label: visualizacion-mapa-riqueza-especies
+#| warning: false
+#| message: false
+#| code-fold: true
+
+# Cálculo de quintiles de riqueza de especies
+rangos_quintiles <- quantile(
+  riqueza_especies_poligonos$especies, 
+  probs = seq(0, 1, by = 0.2), 
+  na.rm = TRUE
+)
+
+# Redondeo de los límites de los quintiles a números enteros
+rangos_quintiles <- c(
+  floor(min(riqueza_especies_poligonos$especies)), 
+  ceiling(rangos_quintiles[-1])
+)
+
+# Etiquetas de los quintiles
+etiquetas_quintiles <- mapply(
+  function(inferior, superior, indice) {
+    if (indice == 1) {
+      return(sprintf("De %d a %d", inferior, superior))
+    } else {
+      return(sprintf("De %d a %d", inferior + 1, superior))
+    }
+  }, 
+  inferior = head(rangos_quintiles, -1), 
+  superior = tail(rangos_quintiles, -1), 
+  indice = seq_along(head(rangos_quintiles, -1))
+)
+
+# Cálculo de quintiles para la riqueza de especies
+riqueza_especies_poligonos$quintil <- cut(
+  riqueza_especies_poligonos$especies,
+  breaks = rangos_quintiles,
+  include.lowest = TRUE,
+  labels = etiquetas_quintiles
+)
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <- colorFactor(
+  palette = "Greens",
+  domain = riqueza_especies_poligonos$quintil,
+  na.color = "transparent"
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = riqueza_especies_poligonos,
+    fillColor = ~ colores_riqueza_especies(riqueza_especies_poligonos$quintil),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Hexágono:</strong>", riqueza_especies_poligonos$h3_address),
+      paste("<strong>Cantidad de especies:</strong>", riqueza_especies_poligonos$especies),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = riqueza_especies_poligonos$quintil,
+    group = "Riqueza de especies",
+    title = "Cantidad de especies de plantas (quintiles)"
+  ) |>
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl()
+```
+
+## Almacenamiento del mapa
+
+```{r}
+#| label: almacenamiento-mapa-riqueza-especies
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Código para el almacenamiento del mapa"
+
+# Almacenamiento del mapa
+riqueza_especies_poligonos |>
+  st_transform(5367) |>
+  st_write(
+    ARCHIVO_MAPA_RIQUEZA_ESPECIES, 
+    delete_layer = TRUE,
+    quiet = TRUE
+  )
+```
+
+::: {.callout-note title="Archivo del mapa de riqueza de especies"}
+`r ARCHIVO_MAPA_RIQUEZA_ESPECIES`
+:::

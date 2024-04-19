@@ -1,3 +1,8 @@
+# Mapas
+
+## Enlaces
+[Generación de mapa de riqueza de especies](https://evaluacion-arboles-mesoamerica.github.io/mapas/src/visualization/generacion-mapa-riqueza-especies-plantas.html)  
+
 ## Comandos para el manejo de la imagen y del contenedor Docker
 
 ### Generación de la imagen a partir del archivo Dockerfile
